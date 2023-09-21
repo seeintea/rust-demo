@@ -1,147 +1,159 @@
-use std::fmt;
-use std::error;
+use std::{fmt::Display, vec};
+impl std::error::Error for CompileError {}
 
-/// Brainfuck state
-/// 
-/// document: https://esolangs.org/wiki/Brainfuck
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BfIR {
-  PtrForward(u32),
-  PtrBack(u32),
-  ValueAdd(u8),
-  ValueSub(u8),
-  OutputValue,
-  InputValue,
-  Jz,
-  Jnz,
+    AddVal(u8),  // +
+    SubVal(u8),  // -
+    AddPtr(u32), // >
+    SubPtr(u32), // <
+    GetByte,     // ,
+    PutByte,     // .
+    Jz,          // [
+    Jnz,         // ]
 }
 
-/// CompileErrorKind
-/// 
-/// [ [ ] : UnclosedLeftOperator
-/// 
-/// [ ] ] : UnexpectedRightOperator
 #[derive(Debug, thiserror::Error)]
 pub enum CompileErrorKind {
-  #[error("Unclosed left operator")]
-  UnclosedLeftOperator,
-  #[error("Unexpected right operator")]
-  UnexpectedRightOperator,
+    #[error("Unclose left bracket")]
+    UnclosedLeftBracket,
+    #[error("Unexpected right bracket")]
+    UnexpectedRightBracket,
 }
 
-/// CompileError
-/// 
-/// throw error info includes row、col and error kind
 #[derive(Debug)]
 pub struct CompileError {
-  pub row: u32,
-  pub col: u32,
-  pub kind: CompileErrorKind,
-}
-// realization fmt::Display error::Error for CompileError
-impl fmt::Display for CompileError {
-  fn fmt(&self, format: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(format, "{} at line {}:{}", self.kind, self.row, self.col)
-  }
+    line: u32,
+    col: u32,
+    kind: CompileErrorKind,
 }
 
-impl error::Error for CompileError {}
-
-/// compile
-/// # Example
-/// ```
-/// compile("+-") // Vec[BfIR::ValueAdd(1), BfIR::ValueSub(1),]
-/// ```
-pub fn compile(code: &str) -> Result<Vec<BfIR>, CompileError> {
-  let mut res: Vec<BfIR> = vec![];
-  // record Jz's row and col
-  let mut jz_record: Vec<(u32, u32)> = vec![];
-  let mut row = 1;
-  let mut col = 0;
-  for c in code.chars() {
-    col += 1;
-    match c {
-        '\n' => {
-          row += 1;
-          col = 0;
-        },
-        '>' => res.push(BfIR::PtrForward(1)),
-        '<' => res.push(BfIR::PtrBack(1)),
-        '+' => res.push(BfIR::ValueAdd(1)),
-        '-' => res.push(BfIR::ValueSub(1)),
-        '.' => res.push(BfIR::OutputValue),
-        ',' => res.push(BfIR::InputValue),
-        '[' => {
-          jz_record.push((row, col));
-          res.push(BfIR::Jz);
-        },
-        ']' => {
-          jz_record.pop().ok_or(CompileError {
-            row, col, kind: CompileErrorKind::UnexpectedRightOperator
-          })?;
-          res.push(BfIR::Jnz);
-        },
-        _ => {}
+impl Display for CompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at line {}:{}", self.kind, self.line, self.col)
     }
-  }
-  if let Some((row, col)) = jz_record.pop() {
-    return Err(CompileError {
-      row, col, kind: CompileErrorKind::UnclosedLeftOperator
-    })
-  }
-  Ok(res)
 }
 
-/// optimize
-/// in Brainfuck has many consecutive identical characters use it can compress 
-/// # Example
-/// ```
-/// let mut code = compile("[+++++]").unwrap();
-/// optimize(&code) // [BfIR::Jz, BfIR::ValueAdd(5), BfIR::Jnz]
-/// ```
-pub fn optimize(code: &mut Vec<BfIR>) {
-  let len = code.len();
-  let mut idx = 0;
-  let mut current = 0;
+pub fn compile(src: &str) -> Result<Vec<BfIR>, CompileError> {
+    let mut code: Vec<BfIR> = vec![];
 
-  // use macro_rules
-  macro_rules! _merge_ir {
-    ($opt:ident, $value:ident) => {{
-      let mut next = idx + 1;
-      while next < len {
-        if let $opt(val) = code[next] {
-          $value = $value.wrapping_add(val);
-        } else {
-          break;
+    let mut stk: Vec<(u32, u32, u32)> = vec![];
+
+    let mut line: u32 = 1;
+    let mut col: u32 = 0;
+
+    for ch in src.chars() {
+        col += 1;
+        match ch {
+            '\n' => {
+                line += 1;
+                col = 0;
+            }
+            '+' => code.push(BfIR::AddVal(1)),
+            '-' => code.push(BfIR::SubVal(1)),
+            '>' => code.push(BfIR::AddPtr(1)),
+            '<' => code.push(BfIR::SubPtr(1)),
+            ',' => code.push(BfIR::GetByte),
+            '.' => code.push(BfIR::PutByte),
+            '[' => {
+                let pos = code.len() as u32;
+                stk.push((pos, line, col));
+                code.push(BfIR::Jz)
+            }
+            ']' => {
+                stk.pop().ok_or(CompileError {
+                    line,
+                    col,
+                    kind: CompileErrorKind::UnexpectedRightBracket,
+                })?;
+                code.push(BfIR::Jnz)
+            }
+            _ => {}
         }
-        next += 1;
-      }
-      idx = next;
-      code[current] = $opt($value);
-      current += 1;
-    }};
-  }
-  macro_rules! _normal_ir {
-    () => {{
-      code[current] = code[idx];
-      current += 1;
-      idx += 1;
-    }};
-  }
-
-  use BfIR::*;
-  while idx < len {
-    match code[idx] {
-      PtrForward(mut val) => _merge_ir!(PtrForward, val),
-      PtrBack(mut val) => _merge_ir!(PtrBack, val),
-      ValueAdd(mut val) => _merge_ir!(ValueAdd, val),
-      ValueSub(mut val) => _merge_ir!(ValueSub, val),
-      OutputValue => _normal_ir!(),
-      InputValue => _normal_ir!(),
-      Jz => _normal_ir!(),
-      Jnz => _normal_ir!(),
     }
-  }
-  code.truncate(current);
-  code.shrink_to_fit();
+
+    if let Some((_, line, col)) = stk.pop() {
+        return Err(CompileError {
+            line,
+            col,
+            kind: CompileErrorKind::UnclosedLeftBracket,
+        });
+    }
+
+    Ok(code)
+}
+
+pub fn optimize(code: &mut Vec<BfIR>) {
+    let len = code.len();
+    let mut i = 0;
+    let mut pc = 0;
+
+    macro_rules! _fold_ir {
+        ($variant:ident, $x: ident) => {{
+            let mut j = i + 1;
+            while j < len {
+                if let $variant(d) = code[j] {
+                    $x = $x.wrapping_add(d);
+                } else {
+                    break;
+                }
+                j += 1;
+            }
+            i = j;
+            code[pc] = $variant($x);
+            pc += 1
+        }};
+    }
+
+    macro_rules! _normal_ir {
+        () => {{
+            code[pc] = code[i];
+            pc += 1;
+            i += 1;
+        }};
+    }
+
+    use BfIR::*;
+    while i < len {
+        match code[i] {
+            AddPtr(mut x) => _fold_ir!(AddPtr, x),
+            SubPtr(mut x) => _fold_ir!(SubPtr, x),
+            AddVal(mut x) => _fold_ir!(AddVal, x),
+            SubVal(mut x) => _fold_ir!(SubVal, x),
+            GetByte => _normal_ir!(),
+            PutByte => _normal_ir!(),
+            Jz => _normal_ir!(),
+            Jnz => _normal_ir!(),
+        }
+    }
+    code.truncate(pc);
+    code.shrink_to_fit();
+}
+
+#[test]
+fn test_compile() {
+    assert_eq!(
+        compile("+[,.]").unwrap(),
+        vec![
+            BfIR::AddVal(1),
+            BfIR::Jz,
+            BfIR::GetByte,
+            BfIR::PutByte,
+            BfIR::Jnz,
+        ]
+    );
+
+    match compile("[").unwrap_err().kind {
+        CompileErrorKind::UnclosedLeftBracket => {}
+        _ => panic!(),
+    };
+
+    match compile("]").unwrap_err().kind {
+        CompileErrorKind::UnexpectedRightBracket => {}
+        _ => panic!(),
+    };
+
+    let mut code = compile("[+++++]").unwrap();
+    optimize(&mut code);
+    assert_eq!(code, vec![BfIR::Jz, BfIR::AddVal(5), BfIR::Jnz]);
 }
