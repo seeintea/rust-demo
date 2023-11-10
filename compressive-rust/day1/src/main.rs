@@ -1,3 +1,5 @@
+mod afternoon;
+mod afternoon_test;
 mod morning;
 
 fn main() {
