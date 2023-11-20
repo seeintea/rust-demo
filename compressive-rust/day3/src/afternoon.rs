@@ -1,10 +1,7 @@
-// TODO: remove this when you're done with your implementation.
-#![allow(unused_imports, unused_variables, dead_code)]
-
 mod ffi {
     use std::os::raw::{c_char, c_int};
     #[cfg(not(target_os = "macos"))]
-    use std::os::raw::{c_long, c_ulong, c_ushort, c_uchar};
+    use std::os::raw::{c_long, c_uchar, c_ulong, c_ushort};
 
     // Opaque type. See https://doc.rust-lang.org/nomicon/ffi.html.
     #[repr(C)]
@@ -51,7 +48,7 @@ mod ffi {
         // to macOS (as opposed to iOS / wearOS / etc.) on Intel and PowerPC.
         #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
         #[link_name = "readdir$INODE64"]
-        pub fn readdir(s: *mut DIR) -> *const dirent;
+        pub fn reader(s: *mut DIR) -> *const dirent;
 
         pub fn closedir(s: *mut DIR) -> c_int;
     }
@@ -70,7 +67,13 @@ impl DirectoryIterator {
     fn new(path: &str) -> Result<DirectoryIterator, String> {
         // Call opendir and return a Ok value if that worked,
         // otherwise return Err with a message.
-        unimplemented!()
+        let path = CString::new(path).map_err(|err| format!("Invalid path {err}"))?;
+        let dir = unsafe { ffi::opendir(path.as_ptr()) };
+        if dir.is_null() {
+            Err(format!("Could not open {:?}", path))
+        } else {
+            Ok(DirectoryIterator { path, dir })
+        }
     }
 }
 
@@ -78,14 +81,24 @@ impl Iterator for DirectoryIterator {
     type Item = OsString;
     fn next(&mut self) -> Option<OsString> {
         // Keep calling readdir until we get a NULL pointer back.
-        unimplemented!()
+        let dirent = unsafe { ffi::reader(self.dir) };
+        if dirent.is_null() {
+            return None;
+        }
+        let d_name = unsafe { CStr::from_ptr((*dirent).d_name.as_ptr()) };
+        let os_str = OsStr::from_bytes(d_name.to_bytes());
+        Some(os_str.to_owned())
     }
 }
 
 impl Drop for DirectoryIterator {
     fn drop(&mut self) {
         // Call closedir as needed.
-        unimplemented!()
+        if !self.dir.is_null() {
+            if unsafe { ffi::closedir(self.dir) } != 0 {
+                panic!("Could not close {:?}", self.path);
+            }
+        }
     }
 }
 
